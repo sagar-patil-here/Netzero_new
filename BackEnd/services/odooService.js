@@ -130,38 +130,7 @@ export async function fetchSalesOrders(url, dbName, username, password, limit = 
  */
 async function fetchSalesWithJSONRPC(url, dbName, uid, password, limit, offset) {
   try {
-    // First, search for sales order IDs
-    const searchResponse = await axios.post(`${url}/jsonrpc`, {
-      jsonrpc: '2.0',
-      method: 'call',
-      params: {
-        service: 'object',
-        method: 'execute_kw',
-        args: [
-          dbName,
-          uid,
-          password,
-          'sale.order',
-          'search',
-          [[]],
-          { limit, offset }
-        ]
-      },
-      id: Math.floor(Math.random() * 1000000)
-    }, {
-      headers: {
-        'Content-Type': 'application/json'
-      },
-      timeout: 30000
-    });
-
-    if (!searchResponse.data.result) {
-      return { success: true, data: [], count: 0 };
-    }
-
-    const orderIds = searchResponse.data.result;
-
-    // Get count
+    // Get count first
     const countResponse = await axios.post(`${url}/jsonrpc`, {
       jsonrpc: '2.0',
       method: 'call',
@@ -187,11 +156,7 @@ async function fetchSalesWithJSONRPC(url, dbName, uid, password, limit, offset) 
 
     const count = countResponse.data.result || 0;
 
-    if (orderIds.length === 0) {
-      return { success: true, data: [], count };
-    }
-
-    // Read sales order details
+    // Use search_read - combines search and read in one call, better for computed fields
     const readResponse = await axios.post(`${url}/jsonrpc`, {
       jsonrpc: '2.0',
       method: 'call',
@@ -203,8 +168,8 @@ async function fetchSalesWithJSONRPC(url, dbName, uid, password, limit, offset) 
           uid,
           password,
           'sale.order',
-          'read',
-          [orderIds],
+          'search_read',
+          [[]],
           {
             fields: [
               'id',
@@ -212,6 +177,8 @@ async function fetchSalesWithJSONRPC(url, dbName, uid, password, limit, offset) 
               'partner_id',
               'date_order',
               'amount_total',
+              'amount_untaxed',
+              'amount_tax',
               'state',
               'order_line',
               'user_id',
@@ -219,7 +186,9 @@ async function fetchSalesWithJSONRPC(url, dbName, uid, password, limit, offset) 
               'currency_id',
               'client_order_ref',
               'note'
-            ]
+            ],
+            limit,
+            offset
           }
         ]
       },
@@ -233,22 +202,50 @@ async function fetchSalesWithJSONRPC(url, dbName, uid, password, limit, offset) 
 
     const salesOrders = readResponse.data.result || [];
 
+    // Debug logging
+    if (salesOrders.length > 0) {
+      console.log('Sample order from Odoo:', JSON.stringify(salesOrders[0], null, 2));
+    }
+
     // Format the data for better readability
-    const formattedOrders = salesOrders.map(order => ({
+    const formattedOrders = salesOrders.map(order => {
+      // Handle currency_id - it can be a tuple [id, name] or just an id
+      let currencyName = 'INR';
+      if (order.currency_id) {
+        if (Array.isArray(order.currency_id) && order.currency_id.length > 1) {
+          currencyName = order.currency_id[1];
+        } else if (typeof order.currency_id === 'string') {
+          currencyName = order.currency_id;
+        }
+      }
+
+      // Handle amount_total - calculate from untaxed + tax if total is 0 or null
+      let amountTotal = order.amount_total != null ? Number(order.amount_total) : 0;
+      
+      // If amount_total is 0 or null, try to calculate from amount_untaxed + amount_tax
+      if (amountTotal === 0 || isNaN(amountTotal)) {
+        const amountUntaxed = order.amount_untaxed != null ? Number(order.amount_untaxed) : 0;
+        const amountTax = order.amount_tax != null ? Number(order.amount_tax) : 0;
+        amountTotal = amountUntaxed + amountTax;
+      }
+
+      return {
       id: order.id,
       name: order.name,
       customer: order.partner_id ? order.partner_id[1] : 'N/A',
       customerId: order.partner_id ? order.partner_id[0] : null,
       date: order.date_order,
-      total: order.amount_total,
-      currency: order.currency_id ? order.currency_id[1] : 'USD',
+        total: amountTotal,
+        amount: amountTotal, // Using amount_total instead of quantity
+        currency: currencyName,
       state: order.state,
       salesperson: order.user_id ? order.user_id[1] : 'N/A',
       team: order.team_id ? order.team_id[1] : 'N/A',
       reference: order.client_order_ref || '',
       note: order.note || '',
       lineCount: order.order_line ? order.order_line.length : 0
-    }));
+      };
+    });
 
     return {
       success: true,
@@ -331,6 +328,8 @@ function fetchSalesWithXMLRPC(url, dbName, uid, password, limit, offset) {
                 'partner_id',
                 'date_order',
                 'amount_total',
+                'amount_untaxed',
+                'amount_tax',
                 'state',
                 'order_line',
                 'user_id',
@@ -346,21 +345,49 @@ function fetchSalesWithXMLRPC(url, dbName, uid, password, limit, offset) {
               return;
             }
 
-            const formattedOrders = (salesOrders || []).map(order => ({
+            // Debug logging
+            if (salesOrders && salesOrders.length > 0) {
+              console.log('Sample order from Odoo (XML-RPC):', JSON.stringify(salesOrders[0], null, 2));
+            }
+
+            const formattedOrders = (salesOrders || []).map(order => {
+              // Handle currency_id - it can be a tuple [id, name] or just an id
+              let currencyName = 'INR';
+              if (order.currency_id) {
+                if (Array.isArray(order.currency_id) && order.currency_id.length > 1) {
+                  currencyName = order.currency_id[1];
+                } else if (typeof order.currency_id === 'string') {
+                  currencyName = order.currency_id;
+                }
+              }
+
+              // Handle amount_total - calculate from untaxed + tax if total is 0 or null
+              let amountTotal = order.amount_total != null ? Number(order.amount_total) : 0;
+              
+              // If amount_total is 0 or null, try to calculate from amount_untaxed + amount_tax
+              if (amountTotal === 0 || isNaN(amountTotal)) {
+                const amountUntaxed = order.amount_untaxed != null ? Number(order.amount_untaxed) : 0;
+                const amountTax = order.amount_tax != null ? Number(order.amount_tax) : 0;
+                amountTotal = amountUntaxed + amountTax;
+              }
+
+              return {
               id: order.id,
               name: order.name,
               customer: order.partner_id ? order.partner_id[1] : 'N/A',
               customerId: order.partner_id ? order.partner_id[0] : null,
               date: order.date_order,
-              total: order.amount_total,
-              currency: order.currency_id ? order.currency_id[1] : 'USD',
+                total: amountTotal,
+                amount: amountTotal, // Using amount_total instead of quantity
+                currency: currencyName,
               state: order.state,
               salesperson: order.user_id ? order.user_id[1] : 'N/A',
               team: order.team_id ? order.team_id[1] : 'N/A',
               reference: order.client_order_ref || '',
               note: order.note || '',
               lineCount: order.order_line ? order.order_line.length : 0
-            }));
+              };
+            });
 
             resolve({
               success: true,

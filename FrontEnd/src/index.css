@@ -22,9 +22,15 @@
     scroll-behavior: smooth;
   }
 
-  /* Smooth page transitions */
-  .page-transition {
-    transition: opacity 0.8s cubic-bezier(0.25, 0.1, 0.25, 1);
+  @keyframes pageFade {
+    from {
+      opacity: 0;
+      transform: translateY(8px);
+    }
+    to {
+      opacity: 1;
+      transform: translateY(0);
+    }
   }
 }
 
@@ -43,6 +49,10 @@
   
   .btn-secondary {
     @apply bg-black/20 backdrop-blur-md border border-white/10 text-white font-semibold py-3 px-6 rounded-lg transition-all duration-300 hover:bg-black/30;
+  }
+
+  .page-fade {
+    animation: pageFade 0.45s ease-out;
   }
 
   /* Morphing blob background for auth pages */
